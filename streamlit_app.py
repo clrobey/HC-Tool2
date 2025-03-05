@@ -1,151 +1,55 @@
 import streamlit as st
+import numpy as np
+import altair as alt
 import pandas as pd
-import math
-from pathlib import Path
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+def calculate_probability(Hct_initial, Hct_nadir, Plt_initial, Plt_nadir, GH_days):
+    if GH_days <= 0 or Hct_initial <= 0 or Plt_initial <= 0:
+        return None  # Avoid division errors
+    
+    # Calculate percent change per day
+    pct_change_Hct = ((Hct_initial - Hct_nadir) / (Hct_initial * GH_days)) * 100
+    pct_change_Plt = ((Plt_initial - Plt_nadir) / (Plt_initial * GH_days)) * 100
+    
+    # Apply logistic regression formula
+    logit = -1.994634 + (0.663276 * pct_change_Plt) - (0.769649 * pct_change_Hct)
+    probability = 1 / (1 + np.exp(-logit))
+    
+    return probability, pct_change_Hct, pct_change_Plt
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+def plot_probability_meter(probability):
+    df = pd.DataFrame({"Probability": [probability * 100]})
+    
+    # Define color based on probability value
+    df["Color"] = df["Probability"].apply(lambda x: "red" if x > 70 else "yellow" if x > 30 else "green")
+    
+    chart = alt.Chart(df).mark_bar(size=30).encode(
+        x=alt.X("Probability:Q", scale=alt.Scale(domain=[0, 100]), title="Probability (%)"),
+        y=alt.value(10),
+        color=alt.Color("Color:N", scale=None)  # Using precomputed color
+    ).properties(width=500, height=50)
+    
+    st.altair_chart(chart)
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Streamlit App
+st.title("Measurable Clot Probability Calculator")
+st.write("Enter the patient's lab values and duration of gross hematuria.")
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# User Inputs
+Hct_initial = st.number_input("Hematocrit at GH onset", min_value=0.0, format="%.2f")
+Hct_nadir = st.number_input("Hematocrit nadir", min_value=0.0, format="%.2f")
+Plt_initial = st.number_input("Platelet count at GH onset", min_value=0, format="%d")
+Plt_nadir = st.number_input("Platelet count nadir", min_value=0, format="%d")
+GH_days = st.number_input("Duration of Gross Hematuria (days)", min_value=1, format="%d")
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+# Compute Probability
+if st.button("Calculate Probability"):
+    result = calculate_probability(Hct_initial, Hct_nadir, Plt_initial, Plt_nadir, GH_days)
+    if result is not None:
+        probability, pct_change_Hct, pct_change_Plt = result
+        st.write(f"### Probability of Measurable Clot: {probability:.2%}")
+        st.write(f"#### Percent Decrease in Hematocrit per Day: {pct_change_Hct:.2f}%")
+        st.write(f"#### Percent Decrease in Platelet Count per Day: {pct_change_Plt:.2f}%")
+        plot_probability_meter(probability)
+    else:
+        st.error("Invalid input values. Please ensure all inputs are positive and GH duration is at least 1 day.")
